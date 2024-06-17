@@ -67,6 +67,7 @@ jobs:
             ],
             rules: {
               'header-max-length': [0],
+              'body-max-line-length': [0],
               'function-rules/header-max-length': [
                 2,
                 'always',
