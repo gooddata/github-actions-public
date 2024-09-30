@@ -46,7 +46,7 @@ jobs:
                 rules: {
                   'risk-rule': (parsedCommit) => {
                     const { type, subject } = parsedCommit;
-                    if (type === 'chore' && subject?.startsWith('update')) return [true]; // skip renovate and extimage bumps
+                    if ((type === 'chore' || type === 'fix') && subject?.startsWith('update')) return [true]; // skip renovate and extimage bumps
 
                     try {
                       const trailers = execSync('git interpret-trailers --parse', {
