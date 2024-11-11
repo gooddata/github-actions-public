@@ -1,0 +1,71 @@
+---
+name: Lint Commit Messages (in shell)
+
+on:
+  pull_request:
+  merge_group:
+
+jobs:
+  commit-lint:
+    runs-on:
+      group: infra1-runners-arc
+      labels: runners-small
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 100
+      - shell: bash
+        run: |
+          # Define conventional commit regex with optional breaking change mark
+          CONVENTIONAL_REGEX="^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?: .{1,70}"
+
+          # Get commit subjects and hashes
+          COMMITS=$(git log --reverse --pretty=format:"%h %s" ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+
+          # Initialize violation flag and message
+          VIOLATIONS=""
+
+          # Check each commit subject
+          while IFS= read -r COMMIT; do
+            COMMIT_HASH=$(echo "$COMMIT" | awk '{print $1}')
+            COMMIT_SUBJECT=$(echo "$COMMIT" | cut -d' ' -f2-)
+            COMMIT_VIOLATIONS=""
+          
+            if ! [[ "$COMMIT_SUBJECT" =~ $CONVENTIONAL_REGEX ]]; then
+              COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
+            fi
+          
+            if [[ ! "$COMMIT_SUBJECT" =~ ^chore\(deps\): ]] && [[ ${#COMMIT_SUBJECT} -gt 70 ]]; then
+              COMMIT_VIOLATIONS+=":x: exceeds 70 characters\n"
+            fi
+          
+            REPO_NAME="${{ github.repository }}"
+            if [[ "$REPO_NAME" =~ ^(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
+              if [[ ! "$COMMIT_SUBJECT" =~ ^chore\(update\): ]]; then
+                TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
+                if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
+                  COMMIT_VIOLATIONS+=":x: does not contain a valid risk trailer\n"
+                fi
+              fi
+            fi
+          
+            if [[ -n "$COMMIT_VIOLATIONS" ]]; then
+              VIOLATIONS+="\`$COMMIT_HASH $COMMIT_SUBJECT\`\n$COMMIT_VIOLATIONS\n"
+            fi
+          done <<< "$COMMITS"
+
+          # Output violations if any
+          if [[ -n "$VIOLATIONS" ]]; then
+          echo -e "$VIOLATIONS"
+          echo "## Commit Lint Results" >> $GITHUB_STEP_SUMMARY
+          echo "### Violations" >> $GITHUB_STEP_SUMMARY
+          echo -e "$VIOLATIONS" >> $GITHUB_STEP_SUMMARY
+          exit 1
+          fi
+
+          echo "All commit messages follow Conventional Commits guidelines."
+          echo "## Commit Lint Results" >> $GITHUB_STEP_SUMMARY
+          echo ":white_check_mark: All commit messages follow Conventional Commits guidelines." >> $GITHUB_STEP_SUMMARY
