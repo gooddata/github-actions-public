@@ -3,7 +3,6 @@ name: Lint Commit Messages (in shell)
 
 on:
   pull_request:
-  merge_group:
 
 jobs:
   commit-lint:
@@ -19,6 +18,8 @@ jobs:
           fetch-depth: 100
       - shell: bash
         run: |
+          # Validate commits against Conventional Commits guidelines and internal rules
+          
           # Define conventional commit regex with optional breaking change mark
           CONVENTIONAL_REGEX="^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?: .{1,70}"
 
@@ -43,7 +44,7 @@ jobs:
             fi
           
             REPO_NAME="${{ github.repository }}"
-            if [[ "$REPO_NAME" =~ ^(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
+            if [[ "$REPO_NAME" =~ ^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
               if [[ ! "$COMMIT_SUBJECT" =~ ^chore\(update\): ]]; then
                 TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
                 if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
