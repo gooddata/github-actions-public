@@ -43,7 +43,7 @@ jobs:
             fi
           
             REPO_NAME="${{ github.repository }}"
-            if [[ "$REPO_NAME" =~ ^(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
+            if [[ "$REPO_NAME" =~ ^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
               if [[ ! "$COMMIT_SUBJECT" =~ ^chore\(update\): ]]; then
                 TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
                 if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
