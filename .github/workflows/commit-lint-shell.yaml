@@ -39,7 +39,7 @@ jobs:
               COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
             fi
           
-            if [[ ! "$COMMIT_SUBJECT" =~ ^chore\(deps\): ]] && [[ ${#COMMIT_SUBJECT} -gt 70 ]]; then
+            if [[ ! "$COMMIT_SUBJECT" =~ ^chore(\(deps\):|:[[:space:]]bump) ]] && [[ ${#COMMIT_SUBJECT} -gt 70 ]]; then
               COMMIT_VIOLATIONS+=":x: exceeds 70 characters\n"
             fi
           
