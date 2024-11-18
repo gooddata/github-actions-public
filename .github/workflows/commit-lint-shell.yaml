@@ -39,7 +39,7 @@ jobs:
           CONVENTIONAL_REGEX="^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?: .{1,70}"
 
           # Get commit subjects and hashes
-          COMMITS=$(git log --reverse --pretty=format:"%h %s" ${{ steps.set_commit_range.outputs.commit_range }})
+          COMMITS=$(git log --reverse --no-merges --pretty=format:"%h %s" ${{ steps.set_commit_range.outputs.commit_range }})
 
           # Initialize violation flag and message
           VIOLATIONS=""
