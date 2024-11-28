@@ -49,7 +49,11 @@ jobs:
             COMMIT_HASH=$(echo "$COMMIT" | awk '{print $1}')
             COMMIT_SUBJECT=$(echo "$COMMIT" | cut -d' ' -f2-)
             COMMIT_VIOLATIONS=""
-          
+            
+            if [[ "$COMMIT_SUBJECT" =~ ^revert ]]; then
+              continue
+            fi
+            
             if ! [[ "$COMMIT_SUBJECT" =~ $CONVENTIONAL_REGEX ]]; then
               COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
             fi
@@ -60,7 +64,7 @@ jobs:
           
             REPO_NAME="${{ github.repository }}"
             if [[ "$REPO_NAME" =~ ^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
-              if [[ ! "$COMMIT_SUBJECT" =~ ^chore.*:[[:space:]]update ]]; then
+              if [[ ! "$COMMIT_SUBJECT" =~ ^chore.*:[[:space:]][Uu]pdate ]]; then
                 TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
                 if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
                   COMMIT_VIOLATIONS+=":x: does not contain a valid risk trailer\n"
