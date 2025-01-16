@@ -45,45 +45,47 @@ jobs:
           VIOLATIONS=""
 
           # Check each commit subject
-          while IFS= read -r COMMIT; do
-            COMMIT_HASH=$(echo "$COMMIT" | awk '{print $1}')
-            COMMIT_SUBJECT=$(echo "$COMMIT" | cut -d' ' -f2-)
-            COMMIT_VIOLATIONS=""
+          if [[ -n "$COMMITS" ]]; then
+            while IFS= read -r COMMIT; do
+              COMMIT_HASH=$(echo "$COMMIT" | awk '{print $1}')
+              COMMIT_SUBJECT=$(echo "$COMMIT" | cut -d' ' -f2-)
+              COMMIT_VIOLATIONS=""
+              
+              if [[ "$COMMIT_SUBJECT" =~ ^revert ]]; then
+                continue
+              fi
+              
+              if ! [[ "$COMMIT_SUBJECT" =~ $CONVENTIONAL_REGEX ]]; then
+                COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
+              fi
             
-            if [[ "$COMMIT_SUBJECT" =~ ^revert ]]; then
-              continue
-            fi
+              if [[ ! "$COMMIT_SUBJECT" =~ ^chore(\(deps\):|:[[:space:]]bump) ]] && [[ ${#COMMIT_SUBJECT} -gt 70 ]]; then
+                COMMIT_VIOLATIONS+=":x: exceeds 70 characters\n"
+              fi
             
-            if ! [[ "$COMMIT_SUBJECT" =~ $CONVENTIONAL_REGEX ]]; then
-              COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
-            fi
-          
-            if [[ ! "$COMMIT_SUBJECT" =~ ^chore(\(deps\):|:[[:space:]]bump) ]] && [[ ${#COMMIT_SUBJECT} -gt 70 ]]; then
-              COMMIT_VIOLATIONS+=":x: exceeds 70 characters\n"
-            fi
-          
-            REPO_NAME="${{ github.repository }}"
-            if [[ "$REPO_NAME" =~ ^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
-              if [[ ! "$COMMIT_SUBJECT" =~ ^chore.*:[[:space:]][Uu]pdate ]]; then
-                TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
-                if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
-                  COMMIT_VIOLATIONS+=":x: does not contain a valid risk trailer\n"
+              REPO_NAME="${{ github.repository }}"
+              if [[ "$REPO_NAME" =~ ^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$ ]]; then
+                if [[ ! "$COMMIT_SUBJECT" =~ ^chore.*:[[:space:]][Uu]pdate ]]; then
+                  TRAILERS=$(git show -s --format=%B "$COMMIT_HASH" | git interpret-trailers --parse)
+                  if ! echo "$TRAILERS" | grep -iqE '^risk:\s*(nonprod|low|high)'; then
+                    COMMIT_VIOLATIONS+=":x: does not contain a valid risk trailer\n"
+                  fi
                 fi
               fi
-            fi
-          
-            if [[ -n "$COMMIT_VIOLATIONS" ]]; then
-              VIOLATIONS+="\`$COMMIT_HASH $COMMIT_SUBJECT\`\n$COMMIT_VIOLATIONS\n"
-            fi
-          done <<< "$COMMITS"
+            
+              if [[ -n "$COMMIT_VIOLATIONS" ]]; then
+                VIOLATIONS+="\`$COMMIT_HASH $COMMIT_SUBJECT\`\n$COMMIT_VIOLATIONS\n"
+              fi
+            done <<< "$COMMITS"
+          fi
 
           # Output violations if any
           if [[ -n "$VIOLATIONS" ]]; then
-          echo -e "$VIOLATIONS"
-          echo "## Commit Lint Results" >> $GITHUB_STEP_SUMMARY
-          echo "### Violations" >> $GITHUB_STEP_SUMMARY
-          echo -e "$VIOLATIONS" >> $GITHUB_STEP_SUMMARY
-          exit 1
+            echo -e "$VIOLATIONS"
+            echo "## Commit Lint Results" >> $GITHUB_STEP_SUMMARY
+            echo "### Violations" >> $GITHUB_STEP_SUMMARY
+            echo -e "$VIOLATIONS" >> $GITHUB_STEP_SUMMARY
+            exit 1
           fi
 
           echo "All commit messages follow Conventional Commits guidelines."
