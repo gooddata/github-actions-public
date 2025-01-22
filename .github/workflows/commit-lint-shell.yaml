@@ -51,7 +51,7 @@ jobs:
               COMMIT_SUBJECT=$(echo "$COMMIT" | cut -d' ' -f2-)
               COMMIT_VIOLATIONS=""
               
-              if [[ "$COMMIT_SUBJECT" =~ ^revert ]]; then
+              if [[ "$COMMIT_SUBJECT" =~ ^[Rr]evert ]]; then
                 continue
               fi
               
