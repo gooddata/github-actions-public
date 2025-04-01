@@ -1,0 +1,16 @@
+---
+name: "Get code artifact authen token"
+description: "Get code artifact authen token"
+runs:
+  using: "composite"
+  steps:
+    - name: CODEARTIFACT_AUTH_TOKEN
+      shell: bash
+      run: |
+        CODEARTIFACT_AUTH_TOKEN=`
+          aws codeartifact get-authorization-token \
+          --domain infra1 \
+          --domain-owner 020413372491 \
+          --region us-east-1 --query authorizationToken --output text`
+        echo "CODEARTIFACT_AUTH_TOKEN=$CODEARTIFACT_AUTH_TOKEN" >> $GITHUB_ENV
+        echo "::add-mask::$CODEARTIFACT_AUTH_TOKEN"
