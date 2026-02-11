@@ -36,7 +36,7 @@ jobs:
           # Validate commits against Conventional Commits guidelines and internal rules
           
           # Define conventional commit regex with optional breaking change mark
-          CONVENTIONAL_REGEX="^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\(.+\))?!?: .{1,70}"
+          CONVENTIONAL_REGEX="^(build|chore|ci|docs|feat|fix|perf|refactor|revert|reapply|style|test)(\(.+\))?!?: .{1,70}"
 
           # Get commit subjects and hashes
           COMMITS=$(git log --reverse --no-merges --pretty=format:"%h %s" ${{ steps.set_commit_range.outputs.commit_range }})
