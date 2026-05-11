@@ -12,87 +12,85 @@ jobs:
       labels: runners-small
     permissions:
       contents: read
-      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
     steps:
-      - uses: actions/checkout@v4
-      - run: |
-          set -eu
-          cat << EOF > commitlint.config.mjs
-          /* eslint-disable import/no-extraneous-dependencies */
-          import { maxLength } from '@commitlint/ensure';
-          import { default as conventionalConfig } from '@commitlint/config-conventional';
-          import { execSync } from 'child_process';
-          import toLines from '@commitlint/to-lines';
-
-          const headerMaxLength = 70;
-
-          const validateHeaderMaxLengthIgnoringDeps = (parsedCommit) => {
-            const { type, scope, header } = parsedCommit;
-            const isDepsCommit = type === 'chore' && scope === 'deps';
-
-            return [
-              isDepsCommit || maxLength(header, headerMaxLength),
-              \`header must not be longer than \${headerMaxLength}\`,
-            ];
-          }
-
-          const validateRisk = process.env.GITHUB_REPOSITORY?.match(/gooddata\/(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)/)
-
-          export default {
-            extends: ['@commitlint/config-conventional'],
-            plugins: [
-              'commitlint-plugin-function-rules',
-              {
-                rules: {
-                  'risk-rule': (parsedCommit) => {
-                    const { type, subject } = parsedCommit;
-                    if (type === 'chore' && subject?.startsWith('update')) return [true]; // skip renovate and extimage bumps
-
-                    try {
-                      const trailers = execSync('git interpret-trailers --parse', {
-                        input: parsedCommit.raw || '',
-                      }).toString();
-                      const matches = toLines(trailers)?.filter((ln) => ln.match(/^risk:\s*(nonprod|low|high)/i))?.length;
-                      return [
-                        matches === 1,
-                        \`Should have exactly one risk label of value nonprod|low|high, but \${matches} found.\`,
-                      ];
-                    } catch (err) {
-                      console.error(err.toString());
-                      return [false, 'Error while trying to find risk label'];
-                    }
-                  },
-                },
-              },
-            ],
-            rules: {
-              'header-max-length': [0],
-              'body-max-line-length': [0],
-              'function-rules/header-max-length': [
-                2,
-                'always',
-                validateHeaderMaxLengthIgnoringDeps,
-              ],
-              'subject-case': [
-                2,
-                'never',
-                ['upper-case', 'camel-case', 'kebab-case', 'pascal-case', 'snake-case'],
-              ],
-              'type-enum': [
-                2,
-                'always',
-                [
-                  ...conventionalConfig.rules['type-enum'][2], // Include default types
-                  'config', // Configuration change i.e. hiera or gitops config change
-                ],
-              ],
-              'risk-rule': [
-                validateRisk ? 2 : 0,
-                'always',
-              ],
-            },
-          }
-          EOF
-          cat commitlint.config.mjs
+      - name: Validate commits
         shell: bash
-      - uses: wagoid/commitlint-github-action@v6
+        run: |
+          set -euo pipefail
+
+          : "${BASE_SHA:?unsupported event: no base SHA in event payload}"
+          : "${HEAD_SHA:?unsupported event: no head SHA in event payload}"
+
+          HEADER_MAX_LENGTH=100
+          CONVENTIONAL_TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|reapply|style|test'
+          CONVENTIONAL_REGEX="^(${CONVENTIONAL_TYPES})(\(.+\))?!?: .+"
+          # Bot-generated dep/version bumps (renovate, extimage, ...) - skip length and risk checks
+          BOT_BUMP_REGEX='^chore(\(deps\))?:[[:space:]]([Uu]pdate|bump)'
+          # Repos that require a `risk:` trailer
+          RISK_REPOS_REGEX='^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$'
+
+          # Fetch non-merge commits in the range via the compare API (no checkout required).
+          # Output: one JSON object per line - {sha, message}.
+          COMMITS=$(gh api --paginate "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" \
+            --jq '.commits[] | select((.parents | length) <= 1) | {sha: .sha[0:7], message: .commit.message} | @json')
+
+          VIOLATIONS=""
+          if [[ -n "$COMMITS" ]]; then
+            while IFS= read -r COMMIT_JSON; do
+              COMMIT_HASH=$(jq -r '.sha' <<< "$COMMIT_JSON")
+              COMMIT_MESSAGE=$(jq -r '.message' <<< "$COMMIT_JSON")
+              COMMIT_SUBJECT="${COMMIT_MESSAGE%%$'\n'*}"
+              COMMIT_VIOLATIONS=""
+
+              # Skip auto-generated revert/reapply commits ("Revert ...", "Reapply ...")
+              if [[ "$COMMIT_SUBJECT" =~ ^([Rr]evert|[Rr]eapply) ]]; then
+                continue
+              fi
+
+              IS_BOT_BUMP=false
+              if [[ "$COMMIT_SUBJECT" =~ $BOT_BUMP_REGEX ]]; then
+                IS_BOT_BUMP=true
+              fi
+
+              if ! [[ "$COMMIT_SUBJECT" =~ $CONVENTIONAL_REGEX ]]; then
+                COMMIT_VIOLATIONS+=":x: does not follow Conventional Commits guidelines\n"
+              fi
+
+              if [[ "$IS_BOT_BUMP" == "false" ]] && (( ${#COMMIT_SUBJECT} > HEADER_MAX_LENGTH )); then
+                COMMIT_VIOLATIONS+=":x: exceeds $HEADER_MAX_LENGTH characters\n"
+              fi
+
+              if [[ "$REPO" =~ $RISK_REPOS_REGEX ]] && [[ "$IS_BOT_BUMP" == "false" ]]; then
+                TRAILERS=$(git interpret-trailers --parse <<< "$COMMIT_MESSAGE")
+                if ! grep -iqE '^risk:[[:space:]]*(nonprod|low|high)' <<< "$TRAILERS"; then
+                  COMMIT_VIOLATIONS+=":x: does not contain a valid risk trailer\n"
+                fi
+              fi
+
+              if [[ -n "$COMMIT_VIOLATIONS" ]]; then
+                VIOLATIONS+="\`$COMMIT_HASH $COMMIT_SUBJECT\`\n$COMMIT_VIOLATIONS\n"
+              fi
+            done <<< "$COMMITS"
+          fi
+
+          {
+            echo "## Commit Lint Results"
+            if [[ -n "$VIOLATIONS" ]]; then
+              echo "### Violations"
+              echo -e "$VIOLATIONS"
+            else
+              echo ":white_check_mark: All commit messages follow Conventional Commits guidelines."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ -n "$VIOLATIONS" ]]; then
+            echo -e "$VIOLATIONS"
+            exit 1
+          fi
+
+          echo "All commit messages follow Conventional Commits guidelines."
