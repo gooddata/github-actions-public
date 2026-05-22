@@ -27,7 +27,7 @@ jobs:
           : "${HEAD_SHA:?unsupported event: no head SHA in event payload}"
 
           HEADER_MAX_LENGTH=100
-          CONVENTIONAL_TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|reapply|style|test'
+          CONVENTIONAL_TYPES='build|chore|ci|config|docs|feat|fix|perf|refactor|revert|reapply|style|test'
           CONVENTIONAL_REGEX="^(${CONVENTIONAL_TYPES})(\(.+\))?!?: .+"
           # Bot-generated dep/version bumps (renovate, extimage, ...) - skip length and risk checks
           BOT_BUMP_REGEX='^chore(\(deps\))?:[[:space:]]([Uu]pdate|bump|pin)'
