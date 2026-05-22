@@ -30,7 +30,7 @@ jobs:
           CONVENTIONAL_TYPES='build|chore|ci|docs|feat|fix|perf|refactor|revert|reapply|style|test'
           CONVENTIONAL_REGEX="^(${CONVENTIONAL_TYPES})(\(.+\))?!?: .+"
           # Bot-generated dep/version bumps (renovate, extimage, ...) - skip length and risk checks
-          BOT_BUMP_REGEX='^chore(\(deps\))?:[[:space:]]([Uu]pdate|bump)'
+          BOT_BUMP_REGEX='^chore(\(deps\))?:[[:space:]]([Uu]pdate|bump|pin)'
           # Repos that require a `risk:` trailer
           RISK_REPOS_REGEX='^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$'
 
