@@ -1,0 +1,41 @@
+---
+name: "FOSSA PR scan"
+description: "Run a native FOSSA analyze+test scan for a PR, reusing the gdc-fossa-cli container (no Jenkins)."
+inputs:
+  branch:
+    description: "Branch reported to FOSSA for the analyze upload"
+    required: false
+    default: ${{ github.head_ref }}
+  scan-image:
+    description: "Default FOSSA scan container image (per-repo gdc_fossa.yaml scan_image overrides this)"
+    required: false
+    default: "020413372491.dkr.ecr.us-east-1.amazonaws.com/tools/gdc-fossa-cli:latest"
+  fossa-api-key:
+    description: "FOSSA API key (org GitHub secret FOSSA_API_KEY)"
+    required: true
+  npm-auth-token:
+    description: "NPM read token for private dependency resolution (org GitHub secret NPM_TOKEN)"
+    required: false
+    default: ""
+  github-token:
+    description: "GitHub PAT for private-repo dependency resolution (org GitHub secret TOKEN_GITHUB_YENKINS)"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout the PR
+      uses: actions/checkout@v7
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
+    - name: Run FOSSA scan
+      shell: bash
+      env:
+        FOSSA_API_KEY: ${{ inputs.fossa-api-key }}
+        NPM_AUTH_TOKEN: ${{ inputs.npm-auth-token }}
+        GITHUB_PULL_TOKEN: ${{ inputs.github-token }}
+        SCAN_IMAGE_DEFAULT: ${{ inputs.scan-image }}
+        FOSSA_BRANCH: ${{ inputs.branch }}
+        REPO_NAME: ${{ github.event.repository.name }}
+      run: bash ${{ github.action_path }}/scan.sh
