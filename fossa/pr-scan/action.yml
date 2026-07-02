@@ -29,6 +29,87 @@ runs:
       with:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
+    - name: Get CodeArtifact token
+      uses: gooddata/github-actions-public/codeartifact/get-token@master
+    - name: Set up Maven settings
+      uses: s4u/maven-settings-action@v4.0.0
+      with:
+        servers: |
+          [{
+            "id": "infra1-gooddata",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          },
+          {
+            "id": "infra1-gooddata-snapshots",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          },
+          {
+            "id": "infra1-thirdparty",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          },
+          {
+            "id": "gdc-codeartifact",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          },
+          {
+            "id": "gdc-codeartifact-removed",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          },
+          {
+            "id": "gdc-gooddata-and-upstream",
+            "username": "aws",
+            "password": "${env.CODEARTIFACT_AUTH_TOKEN}"
+          }]
+        repositories: |
+          [{
+            "id": "gdc-codeartifact",
+            "name": "gdc-codeartifact",
+            "url": "https://infra1-020413372491.d.codeartifact.us-east-1.amazonaws.com/maven/gooddata-and-upstream-repositories/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          },
+          {
+            "id": "gdc-codeartifact-removed",
+            "name": "gdc-codeartifact-removed",
+            "url": "https://infra1-020413372491.d.codeartifact.us-east-1.amazonaws.com/maven/upstream-removed/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          },
+          {
+            "id": "gdc-gooddata-and-upstream",
+            "name": "gdc-gooddata-and-upstream",
+            "url": "https://infra1-020413372491.d.codeartifact.us-east-1.amazonaws.com/maven/gooddata-and-upstream-repositories/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          },
+          {
+            "id": "central",
+            "name": "central",
+            "url": "https://repo.maven.apache.org/maven2/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          }]
+        pluginRepositories: |
+          [{
+            "id": "gdc-codeartifact",
+            "name": "gdc-codeartifact",
+            "url": "https://infra1-020413372491.d.codeartifact.us-east-1.amazonaws.com/maven/gooddata-and-upstream-repositories/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          },
+          {
+            "id": "central",
+            "name": "central",
+            "url": "https://repo.maven.apache.org/maven2/",
+            "snapshots": {"enabled": "true"},
+            "releases": {"enabled": "true"}
+          }]
+        githubServer: false
     - name: Run FOSSA scan
       shell: bash
       env:

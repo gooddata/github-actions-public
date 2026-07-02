@@ -12,6 +12,7 @@ set -euo pipefail
 : "${REPO_NAME:?REPO_NAME is required}"
 NPM_AUTH_TOKEN="${NPM_AUTH_TOKEN:-}"
 GITHUB_PULL_TOKEN="${GITHUB_PULL_TOKEN:-}"
+CODEARTIFACT_AUTH_TOKEN="${CODEARTIFACT_AUTH_TOKEN:-}"
 SCAN_IMAGE_DEFAULT="${SCAN_IMAGE_DEFAULT:?SCAN_IMAGE_DEFAULT is required}"
 FOSSA_BRANCH="${FOSSA_BRANCH:-}"
 
@@ -78,6 +79,7 @@ run_scan() {
     "${mount_args[@]}" \
     -e USER_UID="$(id -u)" \
     -e FOSSA_API_KEY -e NPM_AUTH_TOKEN \
+    -e CODEARTIFACT_AUTH_TOKEN \
     -e JAVA_VERSION="${java_version}" \
     "${scan_img}" \
     fossa_scanning_tool -r "${REPO_NAME}" -o "not_found" -v -c analyze test \
