@@ -56,11 +56,12 @@ run_scan() {
   local mount_args=()
 
   if [ -n "${gdc_conf}" ] && [ -f "${gdc_conf}" ]; then
+    local rel_conf="${gdc_conf#${src_dir}/}"
     local img_override
     img_override="$(yq -r '.scan_image | select(. != null)' "${gdc_conf}")"
     [ -n "${img_override}" ] && scan_img="${img_override}"
     java_version="$(yq -r '.java_version | select(. != null)' "${gdc_conf}")"
-    conf_arg=(--gdc-conf "$(basename "${gdc_conf}")")
+    conf_arg=(--gdc-conf "${rel_conf}")
   fi
 
   docker_pull "${scan_img}"
