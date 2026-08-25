@@ -25,6 +25,16 @@ name: Git AI notes
 #   Do NOT "fix" this by moving callers to `pull_request_target`: that runs in
 #   base-repo context with a write token and is a privilege-escalation vector.
 #   On a fork PR, attribution stays in-band via the commit's own trailers.
+#   Dependabot is excluded for the same reason: its runs get a read-only token
+#   even though its branch lives in the base repository, so `fork` is false.
+#
+# CONCURRENCY IS DELIBERATELY NOT SERIALIZED.
+#   git-ai fetches, merges and retries a non-fast-forward push to the notes ref,
+#   so racing runs normally converge. A GitHub `concurrency` group would be worse
+#   than the race it prevents: a group holds one running plus one pending run and
+#   CANCELS further pending ones, so a queued merge-time consolidation can be
+#   evicted by a later synchronize. For a job whose entire purpose is complete
+#   attribution, a dropped run costs more than a retried one.
 #
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
 #   * Installs from the GitHub release asset, NOT usegitai.com, which removes the
@@ -48,11 +58,15 @@ env:
 
 jobs:
   git-ai:
-    # Fail closed: require a pull_request payload, exclude forks (read-only
-    # token), then run on merge or on a push to an open PR.
+    # Fail closed on every axis. Require a pull_request payload; require the head
+    # branch to live in this repository (an exact full_name match, not
+    # `head.repo.fork != true`, which passes when head.repo is null because the
+    # fork was deleted); exclude Dependabot, whose runs get a read-only token
+    # even from a base-repo branch. Then run on merge, or on a push to an open PR.
     if: >-
       github.event.pull_request != null
-      && github.event.pull_request.head.repo.fork != true
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
       && (github.event.pull_request.merged == true
       || github.event.action == 'synchronize')
     runs-on: ubuntu-latest
