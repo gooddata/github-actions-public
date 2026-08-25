@@ -1,0 +1,96 @@
+---
+name: Git AI notes
+
+# Reusable workflow. Consolidates git-ai AI-authorship notes (refs/notes/ai) at
+# PR-merge time, so attribution survives rebase and squash merges: those give the
+# merged commit a new SHA, which strands the note on the pre-merge commit.
+#
+# Callers own the trigger and must grant `contents: write`, because a called
+# workflow cannot widen its own permissions:
+#
+#   name: Git AI
+#   on:
+#     pull_request:
+#       types: [closed, synchronize]
+#   permissions:
+#     contents: write
+#   jobs:
+#     git-ai:
+#       uses: gooddata/github-actions-public/.github/workflows/git-ai-notes.yaml@<sha>
+#
+# FORK PULL REQUESTS ARE NOT SUPPORTED, BY DESIGN.
+#   `pull_request` runs originating from a fork get a read-only GITHUB_TOKEN, so
+#   the push to refs/notes/ai cannot succeed. Those runs are skipped explicitly
+#   below rather than left to fail with a confusing permissions error.
+#   Do NOT "fix" this by moving callers to `pull_request_target`: that runs in
+#   base-repo context with a write token and is a privilege-escalation vector.
+#   On a fork PR, attribution stays in-band via the commit's own trailers.
+#   Dependabot is excluded for the same reason: its runs get a read-only token
+#   even though its branch lives in the base repository, so `fork` is false.
+#
+# CONCURRENCY IS DELIBERATELY NOT SERIALIZED.
+#   git-ai fetches, merges and retries a non-fast-forward push to the notes ref,
+#   so racing runs normally converge. A GitHub `concurrency` group would be worse
+#   than the race it prevents: a group holds one running plus one pending run and
+#   CANCELS further pending ones, so a queued merge-time consolidation can be
+#   evicted by a later synchronize. For a job whose entire purpose is complete
+#   attribution, a dropped run costs more than a retried one.
+#
+# Supply-chain hardening vs. the stock `git-ai ci github install` output:
+#   * Installs from the GitHub release asset, NOT usegitai.com, which removes the
+#     vendor host, and its telemetry, from the trust path.
+#   * Pins an exact git-ai version (GIT_AI_VERSION) instead of "latest".
+#   * Verifies the installer's SHA-256 (INSTALLER_SHA256) before running it, the
+#     same way this org SHA-pins third-party actions. The pinned installer in
+#     turn verifies the downloaded binary against its embedded checksums.
+#
+# Bump GIT_AI_VERSION and INSTALLER_SHA256 together, here, once, for every
+# calling repository. Get the checksum from that release's SHA256SUMS:
+#   curl -sSL https://github.com/git-ai-project/git-ai/releases/download/<tag>/SHA256SUMS
+
+on:
+  workflow_call:
+
+env:
+  GIT_AI_VERSION: v1.6.24
+  # sha256 of install.sh for GIT_AI_VERSION, from that release's SHA256SUMS
+  INSTALLER_SHA256: ad175700758a9053d38b7221dede5cdc047131d8d6894c2c3398cc048952c687
+
+jobs:
+  git-ai:
+    # Fail closed on every axis. Require the literal `pull_request` event, because
+    # git-ai bails when GITHUB_EVENT_NAME is anything else (src/ci/github.rs) and a
+    # pull_request_target caller would otherwise get a green run that did nothing;
+    # require a pull_request payload; require the head
+    # branch to live in this repository (an exact full_name match, not
+    # `head.repo.fork != true`, which passes when head.repo is null because the
+    # fork was deleted); exclude Dependabot, whose runs get a read-only token
+    # even from a base-repo branch. Then run on merge, or on a push to an open PR.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request != null
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+      && (github.event.pull_request.merged == true
+      || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Install git-ai (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          installer="$(mktemp)"
+          curl --fail --location --silent --show-error \
+            -o "$installer" \
+            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/install.sh"
+          echo "${INSTALLER_SHA256}  ${installer}" | sha256sum -c -
+          bash "$installer"
+          echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
+      - name: Run git-ai
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git-ai ci github run
