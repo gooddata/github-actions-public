@@ -37,6 +37,17 @@ name: Git AI notes
 #   evicted by a later synchronize. For a job whose entire purpose is complete
 #   attribution, a dropped run costs more than a retried one.
 #
+# THE MERGE BASE IS COMPUTED HERE, NOT TAKEN FROM THE EVENT.
+#   `git-ai ci github run` uses `pull_request.base.sha`, the base at the PR's
+#   last sync, not at merge. git-ai counts a merge as a rebase when the PR's
+#   commit count of first-parent commits below it all lie in `base..merge`, so
+#   with a stale base a multi-commit squash on a busy branch passes for a
+#   rebase, and the PR's notes land on unrelated commits. On a merge the job
+#   runs `git-ai ci local merge` instead: it is a rebase when the first-parent
+#   commits below the merge carry the PR's own authors and subjects, in order,
+#   and the base is the commit below them; otherwise the merge's first parent.
+#   A push to an open PR still runs `git-ai ci github run`.
+#
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
 #   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
 #     the vendor host, and its telemetry, from the trust path.
@@ -96,16 +107,54 @@ jobs:
       - name: Run git-ai
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGED: ${{ github.event.pull_request.merged }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git-ai bg start --retry-secs 10 || true
+          if [ "$MERGED" != true ]; then
+            for attempt in 1 2 3; do
+              # A failed run exits before its teardown and leaves the clone,
+              # which the next attempt's clone would refuse.
+              rm -rf git-ai-ci-clone
+              if git-ai ci github run; then exit 0; fi
+              echo "git-ai ci github run failed on attempt ${attempt}; retrying in 5s"
+              sleep 5
+            done
+            exit 1
+          fi
+
+          set -euo pipefail
+          git clone --quiet --branch "$BASE_REF" "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" git-ai-ci-clone
+          cd git-ai-ci-clone
+          # The branch may be gone after the merge; GitHub keeps its commits here.
+          git fetch --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/github/pr/${PR_NUMBER}"
+          sig() { git log --no-walk=unsorted --format='%ae%x1f%s' "$@"; }
+          base_sha=$(git rev-parse "${MERGE_SHA}^1")
+          if [ "$(git rev-list --parents -n 1 "$MERGE_SHA" | wc -w)" -eq 2 ]; then
+            own=$(git rev-list "${MERGE_SHA}^1..${HEAD_SHA}")
+            k=$(printf '%s\n' "$own" | grep -c . || true)
+            if [ "$k" -gt 1 ]; then
+              chain=$(git rev-list --first-parent --max-count="$k" "$MERGE_SHA")
+              # shellcheck disable=SC2086 # word splitting of the sha lists is intended
+              if [ "$(printf '%s\n' "$chain" | grep -c .)" -eq "$k" ] && [ "$(sig $chain)" = "$(sig $own)" ]; then
+                base_sha=$(git rev-parse "$(printf '%s\n' "$chain" | tail -1)^1")
+              fi
+            fi
+          fi
+          echo "merge ${MERGE_SHA}, head ${HEAD_SHA}, base ${base_sha}"
           for attempt in 1 2 3; do
-            # A failed run exits before its teardown and leaves the clone,
-            # which the next attempt's clone would refuse.
-            rm -rf git-ai-ci-clone
-            if git-ai ci github run; then exit 0; fi
-            echo "git-ai ci github run failed on attempt ${attempt}; retrying in 5s"
+            if git-ai ci local merge --merge-commit-sha "$MERGE_SHA" --base-ref "$BASE_REF" \
+                --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" --base-sha "$base_sha"; then
+              exit 0
+            fi
+            echo "git-ai ci local merge failed on attempt ${attempt}; retrying in 5s"
             sleep 5
           done
           exit 1
