@@ -24,7 +24,8 @@ name: Git AI notes
 #   below rather than left to fail with a confusing permissions error.
 #   Do NOT "fix" this by moving callers to `pull_request_target`: that runs in
 #   base-repo context with a write token and is a privilege-escalation vector.
-#   On a fork PR, attribution stays in-band via the commit's own trailers.
+#   A fork author's notes reach this repository only if they push refs/notes/ai
+#   here themselves; git-ai pushes notes to the remote the branch went to.
 #   Dependabot is excluded for the same reason: its runs get a read-only token
 #   even though its branch lives in the base repository, so `fork` is false.
 #
@@ -37,24 +38,29 @@ name: Git AI notes
 #   attribution, a dropped run costs more than a retried one.
 #
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
-#   * Installs from the GitHub release asset, NOT usegitai.com, which removes the
-#     vendor host, and its telemetry, from the trust path.
+#   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
+#     the vendor host, and its telemetry, from the trust path.
 #   * Pins an exact git-ai version (GIT_AI_VERSION) instead of "latest".
-#   * Verifies the installer's SHA-256 (INSTALLER_SHA256) before running it, the
-#     same way this org SHA-pins third-party actions. The pinned installer in
-#     turn verifies the downloaded binary against its embedded checksums.
+#   * Verifies the binary's SHA-256 (GIT_AI_SHA256) before installing it, the
+#     same way this org SHA-pins third-party actions.
 #
-# Bump GIT_AI_VERSION and INSTALLER_SHA256 together, here, once, for every
-# calling repository. Get the checksum from that release's SHA256SUMS:
+# THE BACKGROUND SERVICE IS STARTED BEFORE THE RUN.
+#   git-ai 1.7 routes work through a background service and the CLI waits only
+#   briefly for its sockets, which a fresh runner can miss. The job starts the
+#   service first and retries the run, so a slow start does not drop a merge.
+#
+# Bump GIT_AI_VERSION and GIT_AI_SHA256 together, here, then repin every caller
+# to the new commit SHA. Get the checksum of git-ai-linux-x64 from that
+# release's SHA256SUMS:
 #   curl -sSL https://github.com/git-ai-project/git-ai/releases/download/<tag>/SHA256SUMS
 
 on:
   workflow_call:
 
 env:
-  GIT_AI_VERSION: v1.6.24
-  # sha256 of install.sh for GIT_AI_VERSION, from that release's SHA256SUMS
-  INSTALLER_SHA256: ad175700758a9053d38b7221dede5cdc047131d8d6894c2c3398cc048952c687
+  GIT_AI_VERSION: v1.7.6
+  # sha256 of git-ai-linux-x64 for GIT_AI_VERSION, from that release's SHA256SUMS
+  GIT_AI_SHA256: f6cda0cb43c1c9a3d68e7efe2d79577680ea6f382c31bf36a2162906f93f6c1c
 
 jobs:
   git-ai:
@@ -80,12 +86,12 @@ jobs:
       - name: Install git-ai (pinned + checksum-verified)
         run: |
           set -euo pipefail
-          installer="$(mktemp)"
+          bin="$(mktemp)"
           curl --fail --location --silent --show-error \
-            -o "$installer" \
-            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/install.sh"
-          echo "${INSTALLER_SHA256}  ${installer}" | sha256sum -c -
-          bash "$installer"
+            -o "$bin" \
+            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/git-ai-linux-x64"
+          echo "${GIT_AI_SHA256}  ${bin}" | sha256sum -c -
+          install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
           echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
       - name: Run git-ai
         env:
@@ -93,4 +99,13 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git-ai ci github run
+          git-ai bg start --retry-secs 10 || true
+          for attempt in 1 2 3; do
+            # A failed run exits before its teardown and leaves the clone,
+            # which the next attempt's clone would refuse.
+            rm -rf git-ai-ci-clone
+            if git-ai ci github run; then exit 0; fi
+            echo "git-ai ci github run failed on attempt ${attempt}; retrying in 5s"
+            sleep 5
+          done
+          exit 1
