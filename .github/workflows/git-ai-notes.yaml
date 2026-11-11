@@ -1,0 +1,178 @@
+---
+name: Git AI notes
+
+# Reusable workflow. Consolidates git-ai AI-authorship notes (refs/notes/ai) at
+# PR-merge time, so attribution survives rebase and squash merges: those give the
+# merged commit a new SHA, which strands the note on the pre-merge commit.
+#
+# Callers own the trigger and must grant `contents: write`, because a called
+# workflow cannot widen its own permissions:
+#
+#   name: Git AI
+#   on:
+#     pull_request:
+#       types: [closed, synchronize]
+#   permissions:
+#     contents: write
+#   jobs:
+#     git-ai:
+#       uses: gooddata/github-actions-public/.github/workflows/git-ai-notes.yaml@<sha>
+#
+# FORK PULL REQUESTS ARE NOT SUPPORTED, BY DESIGN.
+#   `pull_request` runs originating from a fork get a read-only GITHUB_TOKEN, so
+#   the push to refs/notes/ai cannot succeed. Those runs are skipped explicitly
+#   below rather than left to fail with a confusing permissions error.
+#   Do NOT "fix" this by moving callers to `pull_request_target`: that runs in
+#   base-repo context with a write token and is a privilege-escalation vector.
+#   A fork author's notes reach this repository only if they push refs/notes/ai
+#   here themselves; git-ai pushes notes to the remote the branch went to.
+#   Dependabot is excluded for the same reason: its runs get a read-only token
+#   even though its branch lives in the base repository, so `fork` is false.
+#
+# CONCURRENCY IS DELIBERATELY NOT SERIALIZED.
+#   git-ai fetches, merges and retries a non-fast-forward push to the notes ref,
+#   so racing runs normally converge. A GitHub `concurrency` group would be worse
+#   than the race it prevents: a group holds one running plus one pending run and
+#   CANCELS further pending ones, so a queued merge-time consolidation can be
+#   evicted by a later synchronize. For a job whose entire purpose is complete
+#   attribution, a dropped run costs more than a retried one.
+#
+# THE MERGE BASE IS COMPUTED HERE, NOT TAKEN FROM THE EVENT.
+#   `git-ai ci github run` uses `pull_request.base.sha`, the base at the PR's
+#   last sync, not at merge. git-ai counts a merge as a rebase when the PR's
+#   commit count of first-parent commits below it all lie in `base..merge`, so
+#   with a stale base a multi-commit squash on a busy branch passes for a
+#   rebase, and the PR's notes land on unrelated commits. On a merge the job
+#   runs `git-ai ci local merge` instead: it is a rebase when the first-parent
+#   commits below the merge carry the PR's own authors and subjects, in order,
+#   and the base is the commit below them; otherwise the merge's first parent.
+#
+# THE REPOSITORY COMES FROM actions/checkout, NOT FROM git-ai's OWN CLONE.
+#   The stock workflow has no checkout step: `git-ai ci github run` clones the
+#   repository itself, with the token written into the clone URL. Both paths
+#   here run `git-ai ci local` instead (`merge` on a merge, `sync` on a push to
+#   an open PR), which works in the checkout and takes its inputs as flags, so
+#   the token stays in the checkout action's credential helper. The checkout is
+#   of the base branch, with full history: on a closed PR the default ref is the
+#   PR's merge ref, which is gone once the branch is deleted, and git-ai walks
+#   history to find merge bases.
+#
+# Supply-chain hardening vs. the stock `git-ai ci github install` output:
+#   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
+#     the vendor host, and its telemetry, from the trust path.
+#   * Pins an exact git-ai version (GIT_AI_VERSION) instead of "latest".
+#   * Verifies the binary's SHA-256 (GIT_AI_SHA256) before installing it, the
+#     same way this org SHA-pins third-party actions.
+#   * Never puts the token in a URL: git-ai's own clone does.
+#
+# THE BACKGROUND SERVICE IS STARTED BEFORE THE RUN.
+#   git-ai 1.7 routes work through a background service and the CLI waits only
+#   briefly for its sockets, which a fresh runner can miss. The job starts the
+#   service first and retries the run, so a slow start does not drop a merge.
+#
+# Bump GIT_AI_VERSION and GIT_AI_SHA256 together, here, then repin every caller
+# to the new commit SHA. Get the checksum of git-ai-linux-x64 from that
+# release's SHA256SUMS:
+#   curl -sSL https://github.com/git-ai-project/git-ai/releases/download/<tag>/SHA256SUMS
+
+on:
+  workflow_call:
+
+env:
+  GIT_AI_VERSION: v1.7.6
+  # sha256 of git-ai-linux-x64 for GIT_AI_VERSION, from that release's SHA256SUMS
+  GIT_AI_SHA256: f6cda0cb43c1c9a3d68e7efe2d79577680ea6f382c31bf36a2162906f93f6c1c
+
+jobs:
+  git-ai:
+    # Fail closed on every axis. Require the literal `pull_request` event, because
+    # git-ai bails when GITHUB_EVENT_NAME is anything else (src/ci/github.rs) and a
+    # pull_request_target caller would otherwise get a green run that did nothing;
+    # require a pull_request payload; require the head
+    # branch to live in this repository (an exact full_name match, not
+    # `head.repo.fork != true`, which passes when head.repo is null because the
+    # fork was deleted); exclude Dependabot, whose runs get a read-only token
+    # even from a base-repo branch. Then run on merge, or on a push to an open PR.
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.pull_request != null
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+      && (github.event.pull_request.merged == true
+      || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Install git-ai (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          bin="$(mktemp)"
+          curl --fail --location --silent --show-error \
+            -o "$bin" \
+            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/git-ai-linux-x64"
+          echo "${GIT_AI_SHA256}  ${bin}" | sha256sum -c -
+          install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
+          echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+      - name: Run git-ai
+        env:
+          MERGED: ${{ github.event.pull_request.merged }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git-ai bg start --retry-secs 10 || true
+          # The branch may be gone after a merge; GitHub keeps its commits here.
+          git fetch --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/github/pr/${PR_NUMBER}"
+          if [ "$MERGED" != true ]; then
+            # A push to an open PR. Without the head it replaced there is
+            # nothing to carry notes from, as in `git-ai ci github run`.
+            case "$BEFORE" in ""|0000000000000000000000000000000000000000)
+              echo "no previous head in the event; nothing to carry over"; exit 0 ;;
+            esac
+            for attempt in 1 2 3; do
+              if git-ai ci local sync --previous-head-sha "$BEFORE" --head-sha "${AFTER:-$HEAD_SHA}" \
+                  --base-ref "$BASE_REF" --base-sha "$BASE_SHA" --remote origin; then
+                exit 0
+              fi
+              echo "git-ai ci local sync failed on attempt ${attempt}; retrying in 5s"
+              sleep 5
+            done
+            exit 1
+          fi
+
+          sig() { git log --no-walk=unsorted --format='%ae%x1f%s' "$@"; }
+          base_sha=$(git rev-parse "${MERGE_SHA}^1")
+          if [ "$(git rev-list --parents -n 1 "$MERGE_SHA" | wc -w)" -eq 2 ]; then
+            own=$(git rev-list "${MERGE_SHA}^1..${HEAD_SHA}")
+            k=$(printf '%s\n' "$own" | grep -c . || true)
+            if [ "$k" -gt 1 ]; then
+              chain=$(git rev-list --first-parent --max-count="$k" "$MERGE_SHA")
+              # shellcheck disable=SC2086 # word splitting of the sha lists is intended
+              if [ "$(printf '%s\n' "$chain" | grep -c .)" -eq "$k" ] && [ "$(sig $chain)" = "$(sig $own)" ]; then
+                base_sha=$(git rev-parse "$(printf '%s\n' "$chain" | tail -1)^1")
+              fi
+            fi
+          fi
+          echo "merge ${MERGE_SHA}, head ${HEAD_SHA}, base ${base_sha}"
+          for attempt in 1 2 3; do
+            if git-ai ci local merge --merge-commit-sha "$MERGE_SHA" --base-ref "$BASE_REF" \
+                --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" --base-sha "$base_sha"; then
+              exit 0
+            fi
+            echo "git-ai ci local merge failed on attempt ${attempt}; retrying in 5s"
+            sleep 5
+          done
+          exit 1
