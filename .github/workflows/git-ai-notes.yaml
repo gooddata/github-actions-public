@@ -56,6 +56,15 @@ name: Git AI notes
 #   of the base branch, with full history: on a closed PR the default ref is the
 #   PR's merge ref, which is gone once the branch is deleted, and git-ai walks
 #   history to find merge bases.
+#   The checkout is blobless (`filter: blob:none`): git-ai needs the commit
+#   graph, and fetches the few file contents it diffs from the promisor remote
+#   on demand. A full clone of a large repository costs minutes per run.
+#
+# A MERGE COMMIT IS SKIPPED BEFORE THE CHECKOUT.
+#   A merge commit with two parents keeps the PR's commits and their notes, and
+#   git-ai does nothing for it. The job reads the parent count from the API and
+#   ends there, so repositories that allow merge commits only pay seconds, not
+#   a checkout, on every merge.
 #
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
 #   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
@@ -104,7 +113,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Skip a merge commit
+        id: kind
+        if: github.event.pull_request.merged == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          # A failed lookup falls through to the full run, which decides the same
+          # thing from the checkout.
+          parents=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}" --jq '.parents | length') || parents=0
+          if [ "${parents:-0}" -gt 1 ]; then
+            echo "merge ${MERGE_SHA} has ${parents} parents; the PR's commits keep their notes"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install git-ai (pinned + checksum-verified)
+        if: steps.kind.outputs.skip != 'true'
         run: |
           set -euo pipefail
           bin="$(mktemp)"
@@ -115,10 +140,13 @@ jobs:
           install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
           echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: steps.kind.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
+          filter: blob:none
       - name: Run git-ai
+        if: steps.kind.outputs.skip != 'true'
         env:
           MERGED: ${{ github.event.pull_request.merged }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
