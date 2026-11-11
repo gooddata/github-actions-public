@@ -46,7 +46,16 @@ name: Git AI notes
 #   runs `git-ai ci local merge` instead: it is a rebase when the first-parent
 #   commits below the merge carry the PR's own authors and subjects, in order,
 #   and the base is the commit below them; otherwise the merge's first parent.
-#   A push to an open PR still runs `git-ai ci github run`.
+#
+# THE REPOSITORY COMES FROM actions/checkout, NOT FROM git-ai's OWN CLONE.
+#   The stock workflow has no checkout step: `git-ai ci github run` clones the
+#   repository itself, with the token written into the clone URL. Both paths
+#   here run `git-ai ci local` instead (`merge` on a merge, `sync` on a push to
+#   an open PR), which works in the checkout and takes its inputs as flags, so
+#   the token stays in the checkout action's credential helper. The checkout is
+#   of the base branch, with full history: on a closed PR the default ref is the
+#   PR's merge ref, which is gone once the branch is deleted, and git-ai walks
+#   history to find merge bases.
 #
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
 #   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
@@ -54,6 +63,7 @@ name: Git AI notes
 #   * Pins an exact git-ai version (GIT_AI_VERSION) instead of "latest".
 #   * Verifies the binary's SHA-256 (GIT_AI_SHA256) before installing it, the
 #     same way this org SHA-pins third-party actions.
+#   * Never puts the token in a URL: git-ai's own clone does.
 #
 # THE BACKGROUND SERVICE IS STARTED BEFORE THE RUN.
 #   git-ai 1.7 routes work through a background service and the CLI waits only
@@ -104,37 +114,45 @@ jobs:
           echo "${GIT_AI_SHA256}  ${bin}" | sha256sum -c -
           install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
           echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
       - name: Run git-ai
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MERGED: ${{ github.event.pull_request.merged }}
-          REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
+          set -euo pipefail
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git-ai bg start --retry-secs 10 || true
+          # The branch may be gone after a merge; GitHub keeps its commits here.
+          git fetch --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/github/pr/${PR_NUMBER}"
           if [ "$MERGED" != true ]; then
+            # A push to an open PR. Without the head it replaced there is
+            # nothing to carry notes from, as in `git-ai ci github run`.
+            case "$BEFORE" in ""|0000000000000000000000000000000000000000)
+              echo "no previous head in the event; nothing to carry over"; exit 0 ;;
+            esac
             for attempt in 1 2 3; do
-              # A failed run exits before its teardown and leaves the clone,
-              # which the next attempt's clone would refuse.
-              rm -rf git-ai-ci-clone
-              if git-ai ci github run; then exit 0; fi
-              echo "git-ai ci github run failed on attempt ${attempt}; retrying in 5s"
+              if git-ai ci local sync --previous-head-sha "$BEFORE" --head-sha "${AFTER:-$HEAD_SHA}" \
+                  --base-ref "$BASE_REF" --base-sha "$BASE_SHA" --remote origin; then
+                exit 0
+              fi
+              echo "git-ai ci local sync failed on attempt ${attempt}; retrying in 5s"
               sleep 5
             done
             exit 1
           fi
 
-          set -euo pipefail
-          git clone --quiet --branch "$BASE_REF" "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" git-ai-ci-clone
-          cd git-ai-ci-clone
-          # The branch may be gone after the merge; GitHub keeps its commits here.
-          git fetch --quiet origin "+refs/pull/${PR_NUMBER}/head:refs/github/pr/${PR_NUMBER}"
           sig() { git log --no-walk=unsorted --format='%ae%x1f%s' "$@"; }
           base_sha=$(git rev-parse "${MERGE_SHA}^1")
           if [ "$(git rev-list --parents -n 1 "$MERGE_SHA" | wc -w)" -eq 2 ]; then
