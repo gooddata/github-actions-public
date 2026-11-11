@@ -1,0 +1,19 @@
+.github/workflows/git-ai-notes.yaml
+  s_d9babc1b5ee96f::t_06a6f60d943142 80-83,208-233,235,237
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0fe1d71aaf54c79db9546512a8ca6416e09c81c9",
+  "prompts": {},
+  "sessions": {
+    "s_d9babc1b5ee96f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5d4ab51f-7a34-4776-b383-901863a2a290",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chris Bonilla <christopher.bonilla@gooddata.com>"
+    }
+  }
+}
