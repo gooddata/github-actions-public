@@ -56,6 +56,15 @@ name: Git AI notes
 #   of the base branch, with full history: on a closed PR the default ref is the
 #   PR's merge ref, which is gone once the branch is deleted, and git-ai walks
 #   history to find merge bases.
+#   The checkout is blobless (`filter: blob:none`): git-ai needs the commit
+#   graph, and fetches the few file contents it diffs from the promisor remote
+#   on demand. A full clone of a large repository costs minutes per run.
+#
+# A MERGE COMMIT IS SKIPPED BEFORE THE CHECKOUT.
+#   A merge commit with two parents keeps the PR's commits and their notes, and
+#   git-ai does nothing for it. The job reads the parent count from the API and
+#   ends there, so repositories that allow merge commits only pay seconds, not
+#   a checkout, on every merge.
 #
 # Supply-chain hardening vs. the stock `git-ai ci github install` output:
 #   * Downloads the release binary from GitHub, NOT usegitai.com, which removes
@@ -64,6 +73,14 @@ name: Git AI notes
 #   * Verifies the binary's SHA-256 (GIT_AI_SHA256) before installing it, the
 #     same way this org SHA-pins third-party actions.
 #   * Never puts the token in a URL: git-ai's own clone does.
+#
+# THE NOTES OF A REBASE MERGE ARE PUSHED HERE, NOT ONLY BY git-ai.
+#   git-ai rewrites every rebased commit's note but pushes only when the tip
+#   has AI authorship. When any commit in the merge has it, the job pushes
+#   refs/notes/ai itself; that push is a no-op when git-ai already pushed. On a
+#   rejected push it resets to the remote notes and rewrites again, so merging
+#   notes stays inside git-ai, which handles notes trees that `git notes merge`
+#   aborts on.
 #
 # THE BACKGROUND SERVICE IS STARTED BEFORE THE RUN.
 #   git-ai 1.7 routes work through a background service and the CLI waits only
@@ -104,7 +121,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Skip a merge commit
+        id: kind
+        if: github.event.pull_request.merged == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+          # A failed lookup falls through to the full run, which decides the same
+          # thing from the checkout.
+          parents=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${MERGE_SHA}" --jq '.parents | length') || parents=0
+          if [ "${parents:-0}" -gt 1 ]; then
+            echo "merge ${MERGE_SHA} has ${parents} parents; the PR's commits keep their notes"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Install git-ai (pinned + checksum-verified)
+        if: steps.kind.outputs.skip != 'true'
         run: |
           set -euo pipefail
           bin="$(mktemp)"
@@ -115,10 +148,13 @@ jobs:
           install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
           echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: steps.kind.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
+          filter: blob:none
       - name: Run git-ai
+        if: steps.kind.outputs.skip != 'true'
         env:
           MERGED: ${{ github.event.pull_request.merged }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -167,12 +203,37 @@ jobs:
             fi
           fi
           echo "merge ${MERGE_SHA}, head ${HEAD_SHA}, base ${base_sha}"
-          for attempt in 1 2 3; do
-            if git-ai ci local merge --merge-commit-sha "$MERGE_SHA" --base-ref "$BASE_REF" \
-                --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" --base-sha "$base_sha"; then
-              exit 0
-            fi
-            echo "git-ai ci local merge failed on attempt ${attempt}; retrying in 5s"
+          # git-ai pushes only when the merge commit itself has AI authorship. On a
+          # rebase merge the earlier commits can have it while the tip does not,
+          # and their rewritten notes would stay on the runner, so the job pushes
+          # them. A rejected push means another run moved the notes ref: the job
+          # resets to the remote notes and runs the rewrite again, which leaves
+          # merging notes to git-ai.
+          for round in 1 2 3; do
+            merged=false
+            for attempt in 1 2 3; do
+              if git-ai ci local merge --merge-commit-sha "$MERGE_SHA" --base-ref "$BASE_REF" \
+                  --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" --base-sha "$base_sha"; then
+                merged=true
+                break
+              fi
+              echo "git-ai ci local merge failed on attempt ${attempt}; retrying in 5s"
+              sleep 5
+            done
+            [ "$merged" = true ] || exit 1
+
+            ai=false
+            for c in $(git rev-list --first-parent "${base_sha}..${MERGE_SHA}"); do
+              # The JSON follows the first `---` line, which is the first line of
+              # a note without file attestations.
+              n=$(git notes --ref=ai show "$c" 2>/dev/null | awk 'f { print } /^---$/ { f = 1 }' \
+                | jq -r '((.sessions // {}) | length) + ((.prompts // {}) | length)' 2>/dev/null || true)
+              if [ "${n:-0}" -gt 0 ]; then ai=true; break; fi
+            done
+            [ "$ai" = true ] || exit 0
+            if git push origin refs/notes/ai:refs/notes/ai; then exit 0; fi
+            echo "notes push rejected in round ${round}; rewriting on the remote notes in 5s"
             sleep 5
+            git fetch --quiet origin +refs/notes/ai:refs/notes/ai
           done
           exit 1
