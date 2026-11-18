@@ -18,6 +18,24 @@ name: Git AI notes
 #     git-ai:
 #       uses: gooddata/github-actions-public/.github/workflows/git-ai-notes.yaml@<sha>
 #
+# A REPOSITORY WITH AN S3 GIT CACHE CAN RESTORE IT INSTEAD OF CLONING.
+#   `runner` takes a JSON `runs-on` value and defaults to "ubuntu-latest".
+#   `git-cache: true` restores the `.git` that the repository's own cache job
+#   saves under `git/<owner>/<repo>-full` in the S3 bucket `gdc-github-cache`,
+#   then fetches only what changed since. On the self-hosted runners, which
+#   run in AWS, every byte fetched from GitHub is cross-cloud transfer that
+#   counts toward CI cost, while the restore reads S3 inside AWS. The restore
+#   takes a few seconds longer than a treeless checkout and is chosen for that
+#   cost. The bucket is reachable from those runner groups, so a caller sets
+#   both:
+#
+#     with:
+#       runner: '{"group": "infra1-runners-arc", "labels": "runners-small"}'
+#       git-cache: true
+#
+#   A cache miss or an unreachable bucket only warns, and the job fetches the
+#   full history as it does without the cache.
+#
 # FORK PULL REQUESTS ARE NOT SUPPORTED, BY DESIGN.
 #   `pull_request` runs originating from a fork get a read-only GITHUB_TOKEN, so
 #   the push to refs/notes/ai cannot succeed. Those runs are skipped explicitly
@@ -93,18 +111,29 @@ name: Git AI notes
 #   briefly for its sockets, which a fresh runner can miss. The job starts the
 #   service first and retries the run, so a slow start does not drop a merge.
 #
-# Bump GIT_AI_VERSION and GIT_AI_SHA256 together, here, then repin every caller
-# to the new commit SHA. Get the checksum of git-ai-linux-x64 from that
-# release's SHA256SUMS:
+# Bump GIT_AI_VERSION and both checksums together, here, then repin every caller
+# to the new commit SHA. Get the checksums of git-ai-linux-x64 and
+# git-ai-linux-arm64 from that release's SHA256SUMS:
 #   curl -sSL https://github.com/git-ai-project/git-ai/releases/download/<tag>/SHA256SUMS
 
 on:
   workflow_call:
+    inputs:
+      runner:
+        description: 'JSON `runs-on` value for the job.'
+        type: string
+        default: '"ubuntu-latest"'
+      git-cache:
+        description: 'Restore the repository''s S3 git cache before the checkout. Needs a runner that can reach the bucket.'
+        type: boolean
+        default: false
 
 env:
   GIT_AI_VERSION: v1.7.6
-  # sha256 of git-ai-linux-x64 for GIT_AI_VERSION, from that release's SHA256SUMS
+  # sha256 of git-ai-linux-x64 and git-ai-linux-arm64 for GIT_AI_VERSION, from
+  # that release's SHA256SUMS. A self-hosted `runner` may be either.
   GIT_AI_SHA256: f6cda0cb43c1c9a3d68e7efe2d79577680ea6f382c31bf36a2162906f93f6c1c
+  GIT_AI_SHA256_ARM64: 1326abd5547636e6b6b297ad79afc955e57e82361efac320d4f860147b95a87a
 
 jobs:
   git-ai:
@@ -123,7 +152,7 @@ jobs:
       && github.actor != 'dependabot[bot]'
       && (github.event.pull_request.merged == true
       || github.event.action == 'synchronize')
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: write
     steps:
@@ -161,19 +190,36 @@ jobs:
         if: steps.kind.outputs.skip != 'true'
         run: |
           set -euo pipefail
+          case "$(uname -m)" in
+            x86_64) asset=git-ai-linux-x64; sum="$GIT_AI_SHA256" ;;
+            aarch64|arm64) asset=git-ai-linux-arm64; sum="$GIT_AI_SHA256_ARM64" ;;
+            *) echo "no pinned git-ai binary for $(uname -m)"; exit 1 ;;
+          esac
           bin="$(mktemp)"
           curl --fail --location --silent --show-error \
             -o "$bin" \
-            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/git-ai-linux-x64"
-          echo "${GIT_AI_SHA256}  ${bin}" | sha256sum -c -
+            "https://github.com/git-ai-project/git-ai/releases/download/${GIT_AI_VERSION}/${asset}"
+          echo "${sum}  ${bin}" | sha256sum -c -
           install -D -m 0755 "$bin" "$HOME/.git-ai/bin/git-ai"
           echo "$HOME/.git-ai/bin" >> "$GITHUB_PATH"
+      - name: Restore the S3 git cache
+        if: steps.kind.outputs.skip != 'true' && inputs.git-cache
+        uses: runs-on/cache/restore@88d90644011a3a9957fd141a106f5a94f9794203 # v5.0.7
+        with:
+          path: ./.git
+          key: git/${{ github.repository }}-full
+        env:
+          RUNS_ON_S3_BUCKET_CACHE: gdc-github-cache
+          RUNS_ON_AWS_REGION: us-east-1
+      # `clean: false` keeps checkout from resetting a restored `.git` into a
+      # full working tree before the sparse pattern applies.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: steps.kind.outputs.skip != 'true'
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           fetch-depth: 0
           filter: tree:0
+          clean: false
           sparse-checkout: .github
       - name: Run git-ai
         if: steps.kind.outputs.skip != 'true'
