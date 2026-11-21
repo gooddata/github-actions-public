@@ -12,11 +12,13 @@ jobs:
       labels: runners-small
     permissions:
       contents: read
+      pull-requests: read
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - name: Validate commits
         shell: bash
@@ -34,10 +36,35 @@ jobs:
           # Repos that require a `risk:` trailer
           RISK_REPOS_REGEX='^(.*/)?(gdc-nas|gdc-ui|gooddata-ui-sdk|gdc-panther)$'
 
-          # Fetch non-merge commits in the range via the compare API (no checkout required).
+          # Fetch non-merge commits (no checkout required).
           # Output: one JSON object per line - {sha, message}.
-          COMMITS=$(gh api --paginate "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" \
-            --jq '.commits[] | select((.parents | length) <= 1) | {sha: .sha[0:7], message: .commit.message} | @json')
+          COMMIT_FILTER='select((.parents | length) <= 1) | {sha: .sha[0:7], message: .commit.message} | @json'
+          # The PR commits API lists at most 250 commits (even with pagination).
+          PR_COMMITS_LIMIT=250
+          PR_COMMIT_COUNT=0
+          if [[ -n "${PR_NUMBER:-}" ]]; then
+            PR_COMMIT_COUNT=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.commits')
+          fi
+
+          if [[ -n "${PR_NUMBER:-}" ]] && (( PR_COMMIT_COUNT <= PR_COMMITS_LIMIT )); then
+            # Use the PR commits API: unlike the compare API it does not compute the diff,
+            # which fails with HTTP 422 ("diff is taking too long to generate") on large PRs.
+            # It lists the PR's *current* commits (oldest first), so anchor the result to this
+            # run's HEAD_SHA: validate only if the listing ends at HEAD_SHA, else the PR head moved.
+            PR_COMMITS=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/commits?per_page=100" \
+              --jq '.[] | {sha, parents, commit: {message: .commit.message}} | @json')
+            LISTED_HEAD_SHA=$(tail -n 1 <<< "$PR_COMMITS" | jq -r '.sha')
+            if [[ "$LISTED_HEAD_SHA" != "$HEAD_SHA" ]]; then
+              echo "::error::PR head moved (listed $LISTED_HEAD_SHA, this run is for $HEAD_SHA). The run for the new head validates its commits."
+              exit 1
+            fi
+            COMMITS=$(jq -r "$COMMIT_FILTER" <<< "$PR_COMMITS")
+          else
+            # merge_group (no PR number in the payload), or a PR above the PR commits API
+            # limit: use the compare API, which paginates through every commit. If GitHub
+            # cannot generate the diff, gh fails and the step fails explicitly (set -e).
+            COMMITS=$(gh api --paginate "repos/$REPO/compare/$BASE_SHA...$HEAD_SHA" --jq ".commits[] | $COMMIT_FILTER")
+          fi
 
           VIOLATIONS=""
           if [[ -n "$COMMITS" ]]; then
